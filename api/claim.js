@@ -4,7 +4,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { qr_id, threads_id } = req.body;
+    const { qr_id, threads_id } = req.body || {};
 
     if (!qr_id || !threads_id) {
       return res.status(400).json({ error: 'Missing parameters' });
@@ -13,19 +13,25 @@ export default async function handler(req, res) {
     const SUPABASE_URL = process.env.SUPABASE_URL;
     const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
+    if (!SUPABASE_URL || !SUPABASE_KEY) {
+      return res.status(500).json({ error: 'Missing Supabase env vars' });
+    }
+
     const headers = {
       apikey: SUPABASE_KEY,
       Authorization: `Bearer ${SUPABASE_KEY}`,
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+      Prefer: 'return=representation'
     };
 
     // 1. 查 QR
-    let qrRes = await fetch(`${SUPABASE_URL}/rest/v1/qr_codes?id=eq.${qr_id}&select=*`, {
-      headers
-    });
-    let qrData = await qrRes.json();
+    const qrRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/qr_codes?id=eq.${encodeURIComponent(qr_id)}&select=*`,
+      { headers }
+    );
+    const qrData = await qrRes.json();
 
-    if (!qrData.length) {
+    if (!Array.isArray(qrData) || qrData.length === 0) {
       return res.status(404).json({ error: 'QR not found' });
     }
 
@@ -34,58 +40,81 @@ export default async function handler(req, res) {
     }
 
     // 2. 查 user
-    let userRes = await fetch(`${SUPABASE_URL}/rest/v1/users?threads_id=eq.${threads_id}&select=*`, {
-      headers
-    });
-    let userData = await userRes.json();
+    const userRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/users?threads_id=eq.${encodeURIComponent(threads_id)}&select=*`,
+      { headers }
+    );
+    const userData = await userRes.json();
 
-    let user_id;
-    let points = 0;
+    let userId;
+    let currentPoints = 0;
 
-    if (userData.length) {
-      user_id = userData[0].id;
-      points = userData[0].points;
+    if (Array.isArray(userData) && userData.length > 0) {
+      userId = userData[0].id;
+      currentPoints = userData[0].points || 0;
     } else {
-      let newUserRes = await fetch(`${SUPABASE_URL}/rest/v1/users`, {
+      const newUserRes = await fetch(`${SUPABASE_URL}/rest/v1/users`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ threads_id, points: 0 })
+        body: JSON.stringify([{ threads_id, points: 0 }])
       });
 
-      let newUser = await newUserRes.json();
-      user_id = newUser[0].id;
-      points = 0;
+      const newUserData = await newUserRes.json();
+
+      if (!Array.isArray(newUserData) || newUserData.length === 0) {
+        return res.status(500).json({ error: 'Failed to create user' });
+      }
+
+      userId = newUserData[0].id;
+      currentPoints = 0;
     }
 
-    // 3. 更新 QR
-    await fetch(`${SUPABASE_URL}/rest/v1/qr_codes?id=eq.${qr_id}`, {
-      method: 'PATCH',
-      headers,
-      body: JSON.stringify({ is_used: true })
-    });
+    // 3. 更新 QR 為已使用
+    const qrUpdateRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/qr_codes?id=eq.${encodeURIComponent(qr_id)}&is_used=eq.false`,
+      {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ is_used: true })
+      }
+    );
+
+    if (!qrUpdateRes.ok) {
+      return res.status(500).json({ error: 'Failed to update QR status' });
+    }
 
     // 4. 更新 points
-    await fetch(`${SUPABASE_URL}/rest/v1/users?id=eq.${user_id}`, {
-      method: 'PATCH',
-      headers,
-      body: JSON.stringify({ points: points + 1 })
-    });
+    const userUpdateRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/users?id=eq.${userId}`,
+      {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ points: currentPoints + 1 })
+      }
+    );
 
-    // 5. 記錄 log
-    await fetch(`${SUPABASE_URL}/rest/v1/scan_logs`, {
+    if (!userUpdateRes.ok) {
+      return res.status(500).json({ error: 'Failed to update user points' });
+    }
+
+    // 5. 記錄 scan log
+    const logRes = await fetch(`${SUPABASE_URL}/rest/v1/scan_logs`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ qr_id, user_id })
+      body: JSON.stringify([{ qr_id, user_id: userId }])
     });
+
+    if (!logRes.ok) {
+      return res.status(500).json({ error: 'Failed to write scan log' });
+    }
 
     return res.status(200).json({
       success: true,
       message: `已幫 @${threads_id} 增加 1 點`
     });
-
   } catch (err) {
     return res.status(500).json({
-      error: err.message
+      error: err.message || 'Server error'
     });
   }
 }
