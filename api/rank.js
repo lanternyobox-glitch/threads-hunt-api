@@ -11,42 +11,43 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'Missing SUPABASE_SERVICE_ROLE_KEY' });
     }
 
-    const apiUrl = `${SUPABASE_URL}/rest/v1/users?select=threads_id,points&order=points.desc&limit=20`;
+    const url = new URL(`${SUPABASE_URL}/rest/v1/users`);
+    url.searchParams.set('select', 'threads_id,points');
+    url.searchParams.set('order', 'points.desc');
+    url.searchParams.set('limit', '20');
 
-    try {
-      const response = await fetch(apiUrl, {
-        method: 'GET',
-        headers: {
-          apikey: SUPABASE_KEY,
-          Authorization: `Bearer ${SUPABASE_KEY}`
-        }
-      });
-
-      const text = await response.text();
-
-      if (!response.ok) {
-        return res.status(response.status).json({
-          error: 'Supabase request failed',
-          url: apiUrl,
-          detail: text
-        });
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+      headers: {
+        'apikey': String(SUPABASE_KEY).trim(),
+        'Authorization': `Bearer ${String(SUPABASE_KEY).trim()}`,
+        'Accept': 'application/json'
       }
+    });
 
-      return res.status(200).json({
-        success: true,
-        url: apiUrl,
-        data: JSON.parse(text)
-      });
-    } catch (fetchErr) {
-      return res.status(500).json({
-        error: 'fetch failed',
-        url: apiUrl,
-        supabaseUrlExists: !!SUPABASE_URL,
-        supabaseUrlValue: SUPABASE_URL,
-        keyExists: !!SUPABASE_KEY,
-        fetchMessage: fetchErr.message
+    const text = await response.text();
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        error: 'Supabase request failed',
+        detail: text
       });
     }
+
+    let data = [];
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      return res.status(500).json({
+        error: 'Invalid JSON from Supabase',
+        detail: text
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data
+    });
   } catch (err) {
     return res.status(500).json({
       error: err.message || 'Server error'
